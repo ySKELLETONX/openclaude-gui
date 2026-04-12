@@ -9,7 +9,7 @@
 
   <p align="center">
     <img src="https://img.shields.io/badge/Maintained%20%3F-yes-green.svg" alt="Maintained">
-    <img src="https://img.shields.io/github/license/danilo/openclaude-gui" alt="License">
+    <img src="https://img.shields.io/github/license/Danilitoxp/openclaude-gui" alt="License">
     <img src="https://img.shields.io/badge/Framework-Tauri%202-blue" alt="Framework">
     <img src="https://img.shields.io/badge/Frontend-Vite%20%2B%20JS-yellow" alt="Frontend">
   </p>
@@ -19,7 +19,7 @@
 
 ## 🌟 O que é o OpenClaude GUI?
 
-O **OpenClaude GUI** é o cliente desktop oficial (e bonitão!) para o projeto **OpenClaude** — o nosso Claude open source. Este projeto foi desenvolvido para proporcionar uma experiência de usuário premium, focada em produtividade e uma estética moderna.
+O **OpenClaude GUI** é o cliente desktop oficial para o projeto **OpenClaude**. Criado e mantido por **Danilo Oliveira**, este projeto foi desenvolvido para proporcionar uma experiência de usuário premium, focada em produtividade e uma estética moderna.
 
 Nascido da necessidade de ter uma interface local poderosa e fácil de usar, ele conecta você diretamente ao poder do OpenClaude sem as distrações do navegador.
 
@@ -49,7 +49,7 @@ Antes de começar, você precisará ter instalado:
 
 1. Clone o repositório:
    ```bash
-   git clone https://github.com/seu-usuario/openclaude-gui.git
+   git clone https://github.com/Danilitoxp/openclaude-gui.git
    cd openclaude-gui
    ```
 
@@ -72,7 +72,7 @@ npm run tauri:build
 
 ## 🤝 Contribuindo
 
-Este projeto é feito pela comunidade para a comunidade. Sinta-se à vontade para abrir issues ou enviar Pull Requests para ajudar a tornar o OpenClaude a melhor alternativa open source!
+Este projeto foi idealizado por **Danilo Oliveira** e é aberto para que a comunidade possa contribuir, evoluir e tornar o OpenClaude a melhor alternativa open source! Sinta-se à vontade para abrir issues ou enviar Pull Requests.
 
 1. Faça um Fork do projeto
 2. Crie sua Feature Branch (`git checkout -b feature/NovaFeature`)
@@ -83,5 +83,6 @@ Este projeto é feito pela comunidade para a comunidade. Sinta-se à vontade par
 ---
 
 <div align="center">
+  <p>Criado por <strong>Danilo Oliveira</strong>.</p>
   <p>Desenvolvido com ❤️ para a comunidade Open Source.</p>
 </div>
