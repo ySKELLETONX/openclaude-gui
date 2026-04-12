@@ -22,6 +22,13 @@ const logCount = document.getElementById('logCount');
 const clearLogsBtn = document.getElementById('clearLogsBtn');
 const openLogsFolderBtn = document.getElementById('openLogsFolderBtn');
 
+// Novos elementos de Requisitos
+const requirementsModal = document.getElementById('requirementsModal');
+const btnInstallOpenclaude = document.getElementById('btnInstallOpenclaude');
+const btnIgnoreRequirements = document.getElementById('btnIgnoreRequirements');
+const installBtnText = document.getElementById('installBtnText');
+const installSpinner = document.getElementById('installSpinner');
+
 // Inicialização
 document.addEventListener('DOMContentLoaded', async () => {
   setupNavigation();
@@ -30,8 +37,42 @@ document.addEventListener('DOMContentLoaded', async () => {
   await updateStatus();
   setupLogListener();
   startStatusPolling();
+  
+  // Verificar requisitos ao iniciar
+  setTimeout(checkRequirements, 1000); 
+  
   console.log('OpenClaude GUI loaded');
 });
+
+// Verificação de Requisitos
+async function checkRequirements() {
+  try {
+    const status = await invoke('check_requirements');
+    console.log('Requirements:', status);
+
+    const stepNode = document.getElementById('step-node');
+    const stepOpenclaude = document.getElementById('step-openclaude');
+    const nodeText = document.getElementById('node-status');
+    const openclaudeText = document.getElementById('openclaude-status');
+
+    const hasNode = status.node || status.bun;
+    stepNode.className = `setup-step ${hasNode ? 'ok' : 'error'}`;
+    nodeText.textContent = hasNode ? (status.bun ? 'Bun detectado' : 'Node.js detectado') : 'Node.js/Bun não encontrado';
+
+    stepOpenclaude.className = `setup-step ${status.openclaude ? 'ok' : 'error'}`;
+    openclaudeText.textContent = status.openclaude ? 'Instalado e pronto' : 'Não encontrado no sistema';
+
+    if (!status.openclaude) {
+      requirementsModal.style.display = 'flex';
+      requirementsModal.classList.add('open');
+    } else {
+      requirementsModal.classList.remove('open');
+      setTimeout(() => requirementsModal.style.display = 'none', 300);
+    }
+  } catch (err) {
+    console.error('Falha ao verificar requisitos:', err);
+  }
+}
 
 // Navegação
 function setupNavigation() {
@@ -298,6 +339,32 @@ function setupEventListeners() {
       testResult.style.color = result.success ? '#4caf50' : '#e74c3c';
     } catch (err) {
       showNotification(`Erro: ${err}`, 'error');
+    }
+  });
+
+  // Requisitos
+  btnIgnoreRequirements.addEventListener('click', () => {
+    requirementsModal.classList.remove('open');
+    setTimeout(() => requirementsModal.style.display = 'none', 300);
+  });
+
+  btnInstallOpenclaude.addEventListener('click', async () => {
+    try {
+      installBtnText.textContent = 'Instalando...';
+      installSpinner.style.display = 'inline-block';
+      btnInstallOpenclaude.disabled = true;
+
+      const result = await invoke('install_openclaude');
+      showNotification(result.message, 'success');
+      
+      // Re-verificar após instalação
+      await checkRequirements();
+    } catch (err) {
+      showNotification(err, 'error');
+    } finally {
+      installBtnText.textContent = 'Instalar OpenClaude via NPM';
+      installSpinner.style.display = 'none';
+      btnInstallOpenclaude.disabled = false;
     }
   });
 }

@@ -160,7 +160,7 @@
 
 
     <!-- Minimalist Provider Modal -->
-    <div class="modal-overlay" id="providerModal">
+    <div class="modal-overlay" id="providerModal" style="display: none;">
       <div class="modal">
         <div class="modal-header">
           <h2 class="modal-title">Configurar Provedor</h2>
@@ -202,6 +202,48 @@
             <button class="btn-modal-secondary" id="cancelProvider">Cancelar</button>
             <button class="btn-modal-primary" id="activateProvider">Ativar</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Requirements Check Modal (Locked Overlay) -->
+    <div class="modal-overlay" id="requirementsModal" style="z-index: 10000; display: none;">
+      <div class="modal setup-modal">
+        <div class="modal-header">
+          <div class="setup-icon">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#f39c12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+              <line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line>
+            </svg>
+          </div>
+          <h2 class="modal-title">Configuração Necessária</h2>
+          <p class="modal-subtitle">Parece que o motor do OpenClaude não está instalado no seu sistema.</p>
+        </div>
+
+        <div class="setup-steps">
+          <div class="setup-step" id="step-node">
+            <span class="step-dot"></span>
+            <div class="step-info">
+              <strong>Node.js / Bun</strong>
+              <p id="node-status">Verificando...</p>
+            </div>
+          </div>
+          <div class="setup-step" id="step-openclaude">
+            <span class="step-dot"></span>
+            <div class="step-info">
+              <strong>OpenClaude CLI (Core)</strong>
+              <p id="openclaude-status">Não encontrado</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="setup-actions">
+          <p class="setup-hint">Você pode instalar via terminal ou clicar no botão abaixo:</p>
+          <button class="btn-modal-primary" id="btnInstallOpenclaude">
+            <span id="installBtnText">Instalar OpenClaude via NPM</span>
+            <div class="spinner" id="installSpinner" style="display: none;"></div>
+          </button>
+          <button class="btn-modal-secondary" id="btnIgnoreRequirements" style="font-size: 11px; opacity: 0.6; cursor: pointer;">Ignorar e continuar mesmo assim</button>
         </div>
       </div>
     </div>

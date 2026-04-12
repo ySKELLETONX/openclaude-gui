@@ -479,3 +479,63 @@ pub async fn test_connection(
         data: None,
     })
 }
+
+#[derive(Debug, Serialize)]
+pub struct RequirementsStatus {
+    pub openclaude: bool,
+    pub node: bool,
+    pub bun: bool,
+    pub npm: bool,
+}
+
+#[tauri::command]
+pub async fn check_requirements() -> Result<RequirementsStatus, String> {
+    let check_cmd = |cmd: &str, args: &[&str]| -> bool {
+        std::process::Command::new(cmd)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+
+    // Check if openclaude is in path or usable
+    // If it's a script path, we might need to check if node/bun can run it
+    let has_openclaude = check_cmd("openclaude", &["--version"]);
+    let has_node = check_cmd("node", &["--version"]);
+    let has_bun = check_cmd("bun", &["--version"]);
+    let has_npm = check_cmd("npm", &["--version"]);
+
+    Ok(RequirementsStatus {
+        openclaude: has_openclaude,
+        node: has_node,
+        bun: has_bun,
+        npm: has_npm,
+    })
+}
+
+#[tauri::command]
+pub async fn install_openclaude(app: tauri::AppHandle) -> Result<CommandResponse, String> {
+    let _ = tauri::Emitter::emit(&app, "log-update", serde_json::json!({
+        "source": "system", "message": "Iniciando instalação do OpenClaude via NPM..."
+    }));
+
+    let status = tokio::process::Command::new("npm")
+        .args(&["install", "-g", "openclaude"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if status.success() {
+        Ok(CommandResponse {
+            success: true,
+            message: "OpenClaude instalado com sucesso!".to_string(),
+            data: None,
+        })
+    } else {
+        Err("Falha ao instalar OpenClaude via NPM. Certifique-se de que o Node.js está instalado e você tem permissão de administrador.".into())
+    }
+}
