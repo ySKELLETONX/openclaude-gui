@@ -18,19 +18,30 @@ pub struct AppConfig {
     pub theme: String,
     pub start_with_windows: bool,
     pub auto_scroll: bool,
+    /// Passa --dangerously-skip-permissions ao CLI (mesmo que no terminal)
+    #[serde(default = "default_true")]
+    pub skip_permissions: bool,
 }
+
+fn default_true() -> bool { true }
 
 impl Default for AppConfig {
     fn default() -> Self {
+        // Use the user's home directory as default working dir
+        let default_working_dir = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| ".".to_string());
+
         Self {
-            openclaude_path: "node".to_string(),
-            args: vec!["dist/cli.mjs".to_string()],
-            working_dir: ".".to_string(),
+            openclaude_path: "openclaude".to_string(),
+            args: vec![],
+            working_dir: default_working_dir,
             port: 3000,
             startup_timeout_ms: 30000,
             theme: "dark".to_string(),
             start_with_windows: false,
             auto_scroll: true,
+            skip_permissions: true,
         }
     }
 }

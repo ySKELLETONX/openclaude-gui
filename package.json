@@ -1,6 +1,6 @@
 {
   "name": "openclaude-gui",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Desktop GUI for OpenClaude - Tauri 2 + Vite",
   "type": "module",
   "scripts": {

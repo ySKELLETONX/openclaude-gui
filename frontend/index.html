@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>OpenClaude GUI</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='75' font-size='75' font-weight='bold' fill='%235865F2'>C</text></svg>" />
   <style media="screen">
     * {
       margin: 0;
@@ -667,6 +668,13 @@
                 <label for="cfgStartWindows">Iniciar com o Windows</label>
               </div>
             </div>
+
+            <div class="form-group">
+              <div class="checkbox-group">
+                <input type="checkbox" id="cfgSkipPermissions" checked>
+                <label for="cfgSkipPermissions">Auto-aprovar ações do agente <small style="opacity:0.6">(--dangerously-skip-permissions)</small></label>
+              </div>
+            </div>
           </div>
 
           <div class="settings-footer">
@@ -839,6 +847,7 @@
         document.getElementById('cfgTimeout').value = config.startupTimeoutMs;
         document.getElementById('cfgAutoScroll').checked = config.autoScroll;
         document.getElementById('cfgStartWindows').checked = config.startWithWindows;
+        document.getElementById('cfgSkipPermissions').checked = config.skipPermissions !== false;
 
         document.querySelectorAll('.theme-btn').forEach(btn => {
           btn.classList.toggle('active', btn.dataset.theme === config.theme);
@@ -860,7 +869,8 @@
         startupTimeoutMs: parseInt(document.getElementById('cfgTimeout').value) || 30000,
         theme: document.querySelector('.theme-btn.active').dataset.theme === 'dark' ? 'dark' : 'light',
         startWithWindows: document.getElementById('cfgStartWindows').checked,
-        autoScroll: document.getElementById('cfgAutoScroll').checked
+        autoScroll: document.getElementById('cfgAutoScroll').checked,
+        skipPermissions: document.getElementById('cfgSkipPermissions').checked
       };
 
       try {

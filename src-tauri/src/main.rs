@@ -37,12 +37,14 @@ async fn main() {
         .manage(ProcessManager::new(5000))
         .manage(app_config)
         .manage(ChatHistory(std::sync::Mutex::new(Vec::new())))
+        .manage(commands::ChatAbortFlag(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))))
         .invoke_handler(tauri::generate_handler![
             commands::start_process,
             commands::stop_process,
             commands::restart_process,
             commands::send_command,
             commands::chat_stream,
+            commands::stop_chat_stream,
             commands::clear_chat_history,
             commands::get_status,
             commands::get_logs,
@@ -57,7 +59,11 @@ async fn main() {
             commands::delete_session,
             commands::check_requirements,
             commands::install_openclaude,
-            commands::save_api_config,
+            commands::save_env_config,
+            commands::get_cli_env,
+            commands::save_global_profile,
+            commands::get_global_config,
+            commands::delete_global_profile,
         ]);
 
     /* #[cfg(not(target_os = "android"))]

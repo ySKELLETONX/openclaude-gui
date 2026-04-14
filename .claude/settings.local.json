@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(where openclaude:*)",
+      "Bash(where openclaude.cmd)",
+      "Bash(cargo check:*)",
+      "Bash(node --check src/App.js)",
+      "Bash(node --check src/main.js)",
+      "Bash(ls *.env .env)"
+    ]
+  }
+}
