@@ -7,7 +7,43 @@ use tauri::Manager;
 use futures_util::StreamExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub struct ChatAbortFlag(pub Arc<AtomicBool>);
+/// Registry de flags de aborto ativas. Cada `send_command`/`chat_stream` cria
+/// sua própria `Arc<AtomicBool>` e a registra aqui; `stop_chat_stream` dispara
+/// todas. Isso evita o bug antigo em que havia um único AtomicBool global,
+/// fazendo mensagens paralelas se cancelarem umas às outras (ou nenhuma ser
+/// cancelada, dependendo do timing de `.store(false)` no início do send).
+pub struct ChatAbortFlag(pub std::sync::Mutex<Vec<Arc<AtomicBool>>>);
+
+impl ChatAbortFlag {
+    pub fn new() -> Self {
+        Self(std::sync::Mutex::new(Vec::new()))
+    }
+
+    /// Cria uma nova flag, registra-a e devolve pro chamador usar.
+    pub fn register(&self) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        if let Ok(mut guard) = self.0.lock() {
+            guard.push(flag.clone());
+        }
+        flag
+    }
+
+    /// Remove a flag quando a invocação terminou (sem disparar aborto).
+    pub fn unregister(&self, flag: &Arc<AtomicBool>) {
+        if let Ok(mut guard) = self.0.lock() {
+            guard.retain(|f| !Arc::ptr_eq(f, flag));
+        }
+    }
+
+    /// Dispara aborto em todas as flags ativas.
+    pub fn abort_all(&self) {
+        if let Ok(guard) = self.0.lock() {
+            for f in guard.iter() {
+                f.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+}
 
 // ── Chat history shared state ────────────────────────────────────────────────
 pub struct ChatHistory(pub std::sync::Mutex<Vec<serde_json::Value>>);
@@ -178,6 +214,22 @@ pub async fn save_env_config(
     project_dir: Option<String>,
     vars: std::collections::HashMap<String, String>,
 ) -> Result<String, String> {
+    // Valida o esquema do BASE_URL antes de gravar: recusar plain http (exceto
+    // localhost/127.0.0.1) evita que a API key seja enviada em claro pela rede.
+    if let Some(url) = vars.get("OPENAI_BASE_URL").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let lower = url.to_ascii_lowercase();
+        let is_https = lower.starts_with("https://");
+        let is_local_http = lower.starts_with("http://localhost")
+            || lower.starts_with("http://127.0.0.1")
+            || lower.starts_with("http://[::1]");
+        if !is_https && !is_local_http {
+            return Err(
+                "OPENAI_BASE_URL precisa começar com 'https://' (ou 'http://localhost' para dev local). \
+                 HTTP simples exporia sua API key em texto plano na rede.".to_string()
+            );
+        }
+    }
+
     let env_path = if let Some(dir_path) = project_dir {
         let p = std::path::PathBuf::from(dir_path).join(".env");
         p
@@ -473,8 +525,8 @@ pub async fn chat_stream(
         return Ok(CommandResponse { success: false, message: "API error".into(), data: None });
     }
 
-    let abort_flag = app.state::<ChatAbortFlag>().0.clone();
-    abort_flag.store(false, Ordering::SeqCst);
+    let abort_registry = app.state::<ChatAbortFlag>();
+    let abort_flag = abort_registry.register();
 
     // Stream SSE chunks to frontend and collect the full reply for history
     let app2 = app.clone();
@@ -545,6 +597,10 @@ pub async fn chat_stream(
         let _ = tauri::Emitter::emit(&app2, "log-update", serde_json::json!({
             "source": "done", "message": ""
         }));
+
+        // Remove a flag do registro global
+        let registry = app2.state::<ChatAbortFlag>();
+        registry.unregister(&abort_flag);
     });
 
     Ok(CommandResponse { success: true, message: "streaming".into(), data: None })
@@ -553,7 +609,7 @@ pub async fn chat_stream(
 #[tauri::command]
 pub async fn stop_chat_stream(app: tauri::AppHandle) -> Result<(), String> {
     let abort_flag = app.state::<ChatAbortFlag>();
-    abort_flag.0.store(true, Ordering::SeqCst);
+    abort_flag.abort_all();
     Ok(())
 }
 
@@ -714,8 +770,8 @@ pub async fn send_command(
         }
     }
 
-    let abort_flag = app.state::<ChatAbortFlag>().0.clone();
-    abort_flag.store(false, Ordering::SeqCst);
+    let abort_registry = app.state::<ChatAbortFlag>();
+    let abort_flag = abort_registry.register();
 
     // One-shot per message: faster with bun (falls back to node).
     // Equivalent to: echo "msg" | openclaude --print
@@ -795,12 +851,14 @@ pub async fn send_command(
                 cmd.arg("--continue");
             }
             cmd.arg("-p");
-            cmd.arg(&effective_prompt);
+            // O prompt é enviado via stdin (echo "msg" | openclaude --print).
+            // Evita o erro "batch file arguments are invalid" do Rust 1.77+ no
+            // Windows, que rejeita args com \n, \r ou % ao invocar .cmd/.bat.
             // current_dir = projeto selecionado (script já é caminho absoluto)
             cmd.current_dir(&working_dir);
             cmd.stdout(std::process::Stdio::piped());
             cmd.stderr(std::process::Stdio::piped());
-            cmd.stdin(std::process::Stdio::null());
+            cmd.stdin(std::process::Stdio::piped());
 
             // Load .env: tenta pasta do projeto primeiro, depois a da config padrão
             let env_candidate = std::path::Path::new(&working_dir).join(".env");
@@ -860,6 +918,25 @@ pub async fn send_command(
                 return;
             }
         };
+
+        // Envia o prompt via stdin e fecha o pipe para sinalizar EOF.
+        if let Some(mut stdin) = proc.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            let prompt_bytes = effective_prompt.into_bytes();
+            let handle_for_stdin = app_handle.clone();
+            tokio::spawn(async move {
+                if let Err(e) = stdin.write_all(&prompt_bytes).await {
+                    eprintln!("[RUST-STDIN] falha ao escrever prompt: {}", e);
+                    // Sem stdin, o CLI executa com prompt vazio e devolve lixo —
+                    // alertar o usuário em vez de deixar silencioso.
+                    let _ = tauri::Emitter::emit(&handle_for_stdin, "log-update", serde_json::json!({
+                        "source": "stderr",
+                        "message": format!("Erro ao enviar prompt ao processo: {}. A resposta pode estar incompleta.", e)
+                    }));
+                }
+                let _ = stdin.shutdown().await;
+            });
+        }
 
         let full_reply = Arc::new(tokio::sync::Mutex::new(String::new()));
 
@@ -949,6 +1026,20 @@ pub async fn send_command(
                 _ = proc.wait() => break,
                 _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
                     if abort_flag.load(Ordering::SeqCst) {
+                        // No Windows, proc.kill() só mata o wrapper .cmd; o Node
+                        // filho (e qualquer PowerShell/Bash que ele spawnou)
+                        // sobrevive. Usamos taskkill /T para derrubar a árvore.
+                        #[cfg(target_os = "windows")]
+                        {
+                            if let Some(pid) = proc.id() {
+                                let _ = tokio::process::Command::new("taskkill")
+                                    .args(["/F", "/T", "/PID", &pid.to_string()])
+                                    .stdout(std::process::Stdio::null())
+                                    .stderr(std::process::Stdio::null())
+                                    .status()
+                                    .await;
+                            }
+                        }
                         let _ = proc.kill().await;
                         break;
                     }
@@ -959,8 +1050,15 @@ pub async fn send_command(
         // IMPORTANTE: aguarda os readers de stdout e stderr terminarem completamente
         // antes de emitir 'done', evitando que o frontend receba 'done' antes de
         // todo o conteúdo ter sido entregue (race condition que causava respostas truncadas).
-        let _ = stdout_done_rx.await;
-        let _ = stderr_done_rx.await;
+        // Timeout de 5s é uma salvaguarda: se um reader panicar ou travar, não
+        // queremos deixar o comando pendurado pra sempre — emitimos 'done' mesmo assim.
+        let drain_timeout = tokio::time::Duration::from_secs(5);
+        if tokio::time::timeout(drain_timeout, stdout_done_rx).await.is_err() {
+            eprintln!("[RUST-DRAIN] timeout aguardando fim do stdout reader");
+        }
+        if tokio::time::timeout(drain_timeout, stderr_done_rx).await.is_err() {
+            eprintln!("[RUST-DRAIN] timeout aguardando fim do stderr reader");
+        }
 
         // Adiciona a resposta da IA ao histórico e emite evento 'done'
         // Se o output é stream-json, extrai apenas o texto limpo para o histórico
@@ -973,6 +1071,10 @@ pub async fn send_command(
         }
 
         let _ = tauri::Emitter::emit(&app_handle, "log-update", serde_json::json!({ "source": "done", "message": "" }));
+
+        // Remove a flag do registro global
+        let registry = app_handle.state::<ChatAbortFlag>();
+        registry.unregister(&abort_flag);
     });
 
     Ok(CommandResponse {
@@ -1135,9 +1237,16 @@ pub async fn delete_session(app: tauri::AppHandle, id: String) -> Result<(), Str
 }
 
 fn sanitize_filename(name: &str) -> String {
-    name.chars()
+    let cleaned: String = name
+        .chars()
         .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-        .collect()
+        .take(128)
+        .collect();
+    if cleaned.is_empty() {
+        "session".to_string()
+    } else {
+        cleaned
+    }
 }
 
 #[tauri::command]
@@ -1177,10 +1286,38 @@ pub async fn check_requirements() -> Result<RequirementsStatus, String> {
 
     // Check if openclaude is in path or usable
     // If it's a script path, we might need to check if node/bun can run it
-    let has_openclaude = check_cmd("openclaude", &["--version"]);
-    let has_node = check_cmd("node", &["--version"]);
+    let has_openclaude = {
+        // PATH direto primeiro. No Windows, após `npm i -g openclaude` numa
+        // sessão nova o PATH ainda pode não ter sido atualizado; nesse caso
+        // caímos no caminho absoluto resolvido por resolve_cli_dir.
+        if check_cmd("openclaude", &["--version"]) {
+            true
+        } else {
+            #[cfg(target_os = "windows")]
+            {
+                check_cmd("openclaude.cmd", &["--version"])
+                    || resolve_cli_dir()
+                        .map(|d| {
+                            let cmd_path = d.join("openclaude.cmd");
+                            cmd_path.exists()
+                                || d.join("openclaude").exists()
+                                || d.join("node_modules").join("openclaude").exists()
+                        })
+                        .unwrap_or(false)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                resolve_cli_dir()
+                    .map(|d| d.join("openclaude").exists() || d.join("bin").join("openclaude").exists())
+                    .unwrap_or(false)
+            }
+        }
+    };
+    let node_bin = if cfg!(target_os = "windows") { "node.exe" } else { "node" };
+    let has_node = check_cmd("node", &["--version"]) || check_cmd(node_bin, &["--version"]);
     let has_bun = check_cmd("bun", &["--version"]);
-    let has_npm = check_cmd("npm", &["--version"]);
+    let npm_bin = if cfg!(target_os = "windows") { "npm.cmd" } else { "npm" };
+    let has_npm = check_cmd("npm", &["--version"]) || check_cmd(npm_bin, &["--version"]);
 
     Ok(RequirementsStatus {
         openclaude: has_openclaude,

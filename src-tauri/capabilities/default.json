@@ -20,6 +20,8 @@
     "dialog:allow-ask",
     "dialog:allow-message",
     "fs:allow-read-text-file",
+    "fs:allow-stat",
+    "fs:allow-exists",
     "shell:allow-open"
   ]
 }

@@ -37,7 +37,7 @@ async fn main() {
         .manage(ProcessManager::new(5000))
         .manage(app_config)
         .manage(ChatHistory(std::sync::Mutex::new(Vec::new())))
-        .manage(commands::ChatAbortFlag(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))))
+        .manage(commands::ChatAbortFlag::new())
         .invoke_handler(tauri::generate_handler![
             commands::start_process,
             commands::stop_process,

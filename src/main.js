@@ -2,7 +2,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open, confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
-import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
+import { readTextFile, writeTextFile, stat } from '@tauri-apps/plugin-fs';
+
+// Limite para anexos de texto lidos inteiros na memória do WebView.
+// Arquivos maiores viram apenas referência por caminho pra IA lidar via Read.
+const MAX_TEXT_ATTACHMENT_BYTES = 2 * 1024 * 1024; // 2 MB
 import './style.css';
 
 // Tauri Window Instance
@@ -175,6 +179,11 @@ let currentSessionId = null;
 let currentThinkingBubble = null;
 let lastAssistantBubble = null;
 let currentAssistantText = ''; // Buffer para texto do turno atual
+// Rastreador de conteúdo por turno: qualquer bloco assistant (texto OU tool_use)
+// ou resultado de ferramenta seta esta flag. Usado para decidir se o 'done'
+// inesperado deve exibir o aviso "agente encerrou subitamente". Resetado no
+// início de cada sendMessage.
+let turnHadAssistantOutput = false;
 let _sessionUserTurn = 0; // Contador de turnos do usuário (para posicionar chips)
 let _pendingChips = []; // Chips aguardando para aparecer após o próximo bloco de texto
 const recentList = document.querySelector('.recent-list');
@@ -801,8 +810,12 @@ listen('log-update', async (event) => {
       }
     }
 
-    // Se o processo terminou prematuramente sem enviar resposta (mas deixou erro)
-    if (!lastAssistantBubble && currentThinkingBubble) {
+    // Se o processo terminou prematuramente sem QUALQUER saída do assistente
+    // (nem texto, nem tool_use) e ainda havia um estado de "pensando", sinaliza.
+    // Usar turnHadAssistantOutput evita falsos positivos: lastAssistantBubble
+    // é zerado por flushPendingChips após renderizar texto, então não reflete
+    // se a resposta existiu neste turno.
+    if (!turnHadAssistantOutput && currentThinkingBubble) {
       const errData = currentThinkingBubble.dataset.lastError;
       if (errData && errData.trim()) {
         console.error('[ERROR-DATA]', errData);
@@ -937,6 +950,7 @@ listen('log-update', async (event) => {
       // Formato SDK: {type:"assistant", message:{content:[...], usage:{input_tokens, output_tokens}}}
       if (evtType === 'assistant' && evt.message?.content) {
         console.log(`[ASSISTANT-BLOCKS] total=${(evt.message.content || []).length} types=[${(evt.message.content || []).map(b => b.type).join(',')}]`);
+        turnHadAssistantOutput = true;
         // Acumula tokens em tempo real
         const u = evt.message.usage;
         if (u && window._liveTokens) {
@@ -1694,6 +1708,7 @@ async function sendMessage(directText) {
   toolCardMap.clear();
   lastAssistantBubble = null;
   currentAssistantText = '';
+  turnHadAssistantOutput = false;
 
   // Show thinking indicator
   currentThinkingBubble = createLogLine('Pensando', 'thinking');
@@ -1773,10 +1788,20 @@ async function sendMessage(directText) {
               finalPrompt = `[Documento anexado em: ${at.path}]\nPor favor, utilize suas ferramentas de sistema para analisar este arquivo caso necessário.\n\n${finalPrompt}`;
             } else {
               try {
-                const content = await readTextFile(at.path);
-                // Trunca textos bizarramente grandes para não explodir a memória do Webview (100k caracteres max)
-                const safeContent = content.length > 100000 ? content.slice(0, 100000) + '\n\n...[CONTEÚDO TRUNCADO PARA ECONOMIZAR CONTEXTO]' : content;
-                finalPrompt = `[Conteúdo do Arquivo: ${at.name}]\n${safeContent}\n\n${finalPrompt}`;
+                // Checa o tamanho antes de ler — evita OOM no WebView com
+                // arquivos absurdamente grandes (ex: log de 500 MB anexado sem querer).
+                const info = await stat(at.path);
+                const size = Number(info?.size || 0);
+                if (size > MAX_TEXT_ATTACHMENT_BYTES) {
+                  const mb = (size / 1024 / 1024).toFixed(1);
+                  console.warn(`[ATTACH] ${at.name} tem ${mb} MB — passando como referência em vez de inline.`);
+                  finalPrompt = `[Arquivo grande anexado em: ${at.path} (${mb} MB)]\nUse a ferramenta Read para lê-lo parcialmente conforme necessário.\n\n${finalPrompt}`;
+                } else {
+                  const content = await readTextFile(at.path);
+                  // Trunca textos bizarramente grandes para não explodir a memória do Webview (100k caracteres max)
+                  const safeContent = content.length > 100000 ? content.slice(0, 100000) + '\n\n...[CONTEÚDO TRUNCADO PARA ECONOMIZAR CONTEXTO]' : content;
+                  finalPrompt = `[Conteúdo do Arquivo: ${at.name}]\n${safeContent}\n\n${finalPrompt}`;
+                }
               } catch (e) {
                 console.warn(`Não foi possível ler ${at.name}:`, e);
                 finalPrompt = `[Arquivo anexado em: ${at.path}]\n\n${finalPrompt}`;
@@ -2116,6 +2141,7 @@ const startNewSession = async () => {
 
     lastAssistantBubble = null;
     currentThinkingBubble = null;
+    turnHadAssistantOutput = false;
     currentSessionId = null;
     window._continueSession = false;
     _sessionUserTurn = 0;

@@ -8,7 +8,10 @@
       "Bash(node --check src/main.js)",
       "Bash(ls *.env .env)",
       "Bash(openclaude --help)",
-      "Bash(where rg:*)"
+      "Bash(where rg:*)",
+      "Bash(grep -n \"TODO\\\\|FIXME\\\\|XXX\\\\|HACK\" /c/Users/Danilo/Desktop/Desenvolvimento/openclaude-gui/src-tauri/src/*.rs)",
+      "Bash(grep -n \"\\\\\\\\\\\\\\\\cmd\\\\|powershell\\\\|cmd\\\\.exe\\\\|batch\" /c/Users/Danilo/Desktop/Desenvolvimento/openclaude-gui/src-tauri/src/commands.rs)",
+      "Bash(node -e \"const fs=require\\('@tauri-apps/plugin-fs'\\); console.log\\(Object.keys\\(fs\\).filter\\(k=>k.toLowerCase\\(\\).includes\\('stat'\\)||k==='exists'\\)\\)\")"
     ]
   }
 }
