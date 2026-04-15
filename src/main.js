@@ -175,6 +175,8 @@ let currentSessionId = null;
 let currentThinkingBubble = null;
 let lastAssistantBubble = null;
 let currentAssistantText = ''; // Buffer para texto do turno atual
+let _sessionUserTurn = 0; // Contador de turnos do usuário (para posicionar chips)
+let _pendingChips = []; // Chips aguardando para aparecer após o próximo bloco de texto
 const recentList = document.querySelector('.recent-list');
 
 // ── Configuração do Markdown ────────────────────────────────────
@@ -539,22 +541,22 @@ const loadSessionsList = async () => {
         delBtn.title = 'Excluir conversa';
         delBtn.onclick = async (e) => {
           e.stopPropagation(); // Não abrir a conversa ao deletar
-          const confirmed = await tauriConfirm(`Excluir a conversa "${readable}"?`, { title: 'Excluir conversa', kind: 'warning' });
-          if (confirmed) {
-            try {
-              await invoke('delete_session', { id });
-              if (currentSessionId === id) {
-                startNewSession();
-              }
-              await loadSessionsList();
-            } catch (err) {
-              console.error('[ERROR] Falha ao deletar sessão:', err);
+          try {
+            await invoke('delete_session', { id });
+            if (currentSessionId === id) {
+              startNewSession();
             }
+            await loadSessionsList();
+          } catch (err) {
+            console.error('[ERROR] Falha ao deletar sessão:', err);
           }
         };
         li.appendChild(delBtn);
 
-        li.onclick = () => selectSession(id);
+        li.onclick = () => {
+          if (id === currentSessionId) return; // já está nessa sessão, não faz nada
+          selectSession(id);
+        };
         recentList.appendChild(li);
       });
     }
@@ -571,11 +573,17 @@ const selectSession = async (id) => {
     // No interval to clear anymore
     const messages = await invoke('load_session', { id });
     currentSessionId = id;
+    window._continueSession = false;
+    _sessionUserTurn = 0;
 
     responseArea.innerHTML = '';
     const hero = document.querySelector('.hero-section');
     if (hero) hero.classList.add('chat-mode');
     if (responseArea) responseArea.style.display = 'flex';
+
+    // Carrega chips persistidos para esta sessão
+    const savedChips = JSON.parse(localStorage.getItem(`chips_${id}`) || '[]');
+    let userTurnCounter = 0;
 
     messages.forEach(msg => {
       const type = msg.role === 'user' ? 'user-message' : 'stdout';
@@ -587,6 +595,22 @@ const selectSession = async (id) => {
         const textObj = textContent.find(c => c.type === 'text');
         textContent = textObj ? textObj.text : '[Imagem Anexada]';
       }
+
+      // Renderiza chips que pertencem a este turno (antes da resposta do assistente)
+      if (type === 'stdout') {
+        const turnChips = savedChips.filter(c => c.userTurn === userTurnCounter);
+        turnChips.forEach(c => {
+          const chip = createInlineToolBlock(c.name, {
+            file_path: c.file,
+            old_string: '\n'.repeat(Math.max(0, c.removed - 1)),
+            new_string: '\n'.repeat(Math.max(0, c.added - 1)),
+            content: '\n'.repeat(Math.max(0, c.added - 1)),
+          });
+          if (chip) responseArea.appendChild(chip);
+        });
+      }
+
+      if (type === 'user') userTurnCounter++;
 
       const line = document.createElement('div');
       line.className = `log-line ${type}`;
@@ -617,7 +641,6 @@ const selectSession = async (id) => {
     });
 
     await loadSessionsList();
-    if (sidebar && !sidebar.classList.contains('collapsed')) sidebar.classList.add('collapsed');
   } catch (err) {
     console.error('[ERROR] Falha ao carregar sessão:', err);
   }
@@ -849,8 +872,8 @@ listen('log-update', async (event) => {
         } else {
           // Mensagens internas do CLI ([context], deprecation, etc.) — mostra como info de progresso
           if (line.includes('[context]')) {
-             updateThinkingState(null, line);
-             continue;
+            updateThinkingState(null, line);
+            continue;
           }
 
           ensureChatMode();
@@ -860,7 +883,6 @@ listen('log-update', async (event) => {
           }
           currentAssistantText = line;
           lastAssistantBubble = createLogLine(currentAssistantText, 'stdout');
-          // Yield: mostra a primeira linha antes de continuar
           await new Promise(r => requestAnimationFrame(r));
         }
         continue;
@@ -937,7 +959,7 @@ listen('log-update', async (event) => {
             // mostramos a atividade em tempo real no bubble de pensamento.
             ensureChatMode();
             updateThinkingState('Trabalhando', null, labelObj);
-            
+
             // Pequeno delay visual para fluidez
             await new Promise(r => requestAnimationFrame(r));
           }
@@ -948,17 +970,14 @@ listen('log-update', async (event) => {
               currentThinkingBubble.remove();
               currentThinkingBubble = null;
             }
-            // Remove o último card de ferramenta ao começar a falar
             if (lastToolCard) {
               lastToolCard.remove();
               lastToolCard = null;
             }
 
-            // Animação word-by-word: simula streaming de tokens em tempo real
-            // Divide em tokens (palavras + espaços/pontuação) para efeito natural
+            // Animação word-by-word
             const tokens = block.text.match(/\S+\s*/g) || [block.text];
-            const DELAY_MS = 18; // ms entre batches
-            // Batch adaptativo: mantém animação em ~1.5s independente do tamanho
+            const DELAY_MS = 18;
             const BATCH = Math.max(1, Math.ceil(tokens.length / 80));
             for (let i = 0; i < tokens.length; i += BATCH) {
               currentAssistantText += tokens.slice(i, i + BATCH).join('');
@@ -970,6 +989,7 @@ listen('log-update', async (event) => {
               responseArea.scrollTo({ top: responseArea.scrollHeight, behavior: 'smooth' });
               await new Promise(r => setTimeout(r, DELAY_MS));
             }
+            flushPendingChips();
           }
         }
         continue;
@@ -1005,21 +1025,74 @@ listen('log-update', async (event) => {
             card.appendChild(outSection);
           }
           responseArea.scrollTo({ top: responseArea.scrollHeight, behavior: 'smooth' });
-          // Pausa: mostra o resultado da ferramenta por um momento
           await new Promise(r => setTimeout(r, 100));
         }
         toolCardMap.delete(toolUseId);
+
+        // Renderiza chip inline para Write/Edit/Bash após resultado
+        const INLINE_TOOLS = new Set(['Write', 'Edit', 'Bash']);
+        if (tUse && INLINE_TOOLS.has(tUse.name)) {
+          const chip = createInlineToolBlock(tUse.name, tUse.input);
+          if (chip) {
+            responseArea.appendChild(chip);
+            responseArea.scrollTo({ top: responseArea.scrollHeight, behavior: 'smooth' });
+          }
+        }
+
         continue;
       }
 
-      // result — resposta final {type:"result", subtype:"success", result:"...", duration_ms, total_cost_usd, usage}
+      // user — resultados de ferramentas retornam como eventos "user" com tool_result blocks
+      // {type:"user", message:{role:"user", content:[{type:"tool_result", tool_use_id:"...", content:...}]}}
+      if (evtType === 'user') {
+        const userContent = Array.isArray(evt.message?.content) ? evt.message.content : [];
+        for (const block of userContent) {
+          if (block.type !== 'tool_result') continue;
+          const toolUseId = block.tool_use_id || '';
+          const tUse = currentToolUses.find(t => t.id === toolUseId);
+          if (!tUse) continue;
+
+          const inlineNames = ['Write', 'Edit', 'Bash'];
+          if (inlineNames.includes(tUse.name)) {
+            const chip = createInlineToolBlock(tUse.name, tUse.input);
+            if (chip) {
+              // Bufferiza o chip — será exibido APÓS o próximo bloco de texto
+              _pendingChips.push(chip);
+
+              // Persiste o chip no localStorage para reexibir ao recarregar a sessão
+              if (currentSessionId) {
+                const key = `chips_${currentSessionId}`;
+                const chips = JSON.parse(localStorage.getItem(key) || '[]');
+                const filePath = tUse.input.file_path || tUse.input.command || '';
+                const oldLines = (tUse.input.old_string || '').split('\n').length;
+                const newLines = (tUse.input.new_string || tUse.input.content || '').split('\n').length;
+                chips.push({ name: tUse.name, file: filePath, added: newLines, removed: oldLines, userTurn: _sessionUserTurn });
+                localStorage.setItem(key, JSON.stringify(chips));
+              }
+            }
+          }
+        }
+        continue;
+      }
+
+      // result — resposta final {type:"result", subtype:"success"/"error_during_execution", ...}
       if (evtType === 'result') {
         const resultText = evt.result || '';
 
-        // Renderiza sumário colapsável apenas para ferramentas SEM card inline
-        // (Write/Edit/Bash já aparecem como cards — só mostra Read/Glob/Grep/etc.)
-        const INLINE_TOOLS = new Set(['Write', 'Edit', 'Bash']);
-        const silentTools = currentToolUses.filter(t => !INLINE_TOOLS.has(t.name));
+        // Mostra mensagem de erro se o modelo falhou
+        if (evt.is_error || evt.subtype === 'error_during_execution') {
+          if (currentThinkingBubble) { currentThinkingBubble.remove(); currentThinkingBubble = null; }
+          const errMsg = resultText || 'O modelo encontrou um erro e não conseguiu completar a tarefa.';
+          ensureChatMode();
+          const errLine = createLogLine(`⚠️ Erro: ${errMsg}`, 'stderr');
+          if (errLine) responseArea.appendChild(errLine);
+          currentToolUses = [];
+          continue;
+        }
+
+        // Renderiza sumário colapsável apenas para ferramentas SEM chip inline
+        // (Write/Edit/Bash já aparecem como chips — só mostra Read/Glob/Grep/etc.)
+        const silentTools = currentToolUses.filter(t => !['Write', 'Edit', 'Bash'].includes(t.name));
         if (silentTools.length > 0) {
           if (currentThinkingBubble) {
             currentThinkingBubble.remove();
@@ -1036,6 +1109,9 @@ listen('log-update', async (event) => {
         }
         currentToolUses = [];
 
+        // Flush de chips que ficaram sem texto depois (caso o modelo não produza texto final)
+        flushPendingChips();
+
         if (resultText) {
           if (currentThinkingBubble) {
             currentThinkingBubble.remove();
@@ -1050,11 +1126,8 @@ listen('log-update', async (event) => {
             createLogLine(resultText, 'stdout');
           }
         }
-        // Mostra barra de stats (tokens, tempo, custo) abaixo da resposta
+        // Mostra barra de stats (tempo, turnos) abaixo da resposta
         if (lastAssistantBubble) {
-          const statsBar = document.createElement('div');
-          statsBar.className = 'response-stats';
-
           const totalSec = evt.duration_ms ? evt.duration_ms / 1000 : 0;
           let duration = null;
           if (totalSec >= 60) {
@@ -1064,42 +1137,21 @@ listen('log-update', async (event) => {
           } else if (totalSec > 0) {
             duration = totalSec.toFixed(1) + 's';
           }
-          const cost = evt.total_cost_usd != null && evt.total_cost_usd > 0 ? '$' + evt.total_cost_usd.toFixed(4) : null;
           const turns = evt.num_turns || null;
 
-          // Soma tokens de todos os modelos usados (SDK usa camelCase em modelUsage)
-          let inTok = 0, outTok = 0;
-          if (evt.modelUsage && typeof evt.modelUsage === 'object') {
-            for (const m of Object.values(evt.modelUsage)) {
-              inTok += m.inputTokens || 0;
-              outTok += m.outputTokens || 0;
-            }
-          }
-          // Fallback: campo usage direto (pode ser snake_case ou camelCase)
-          if (!inTok && !outTok && evt.usage) {
-            inTok = evt.usage.input_tokens || evt.usage.inputTokens || 0;
-            outTok = evt.usage.output_tokens || evt.usage.outputTokens || 0;
-          }
-
           const parts = [];
-          if (inTok || outTok)
-            parts.push(`<span class="stat-item"><span class="stat-icon">↑</span><span class="stat-value">${inTok.toLocaleString()}</span> <span class="stat-icon">↓</span><span class="stat-value">${outTok.toLocaleString()} tk</span></span>`);
           if (duration)
             parts.push(`<span class="stat-item"><span class="stat-icon">⏱</span><span class="stat-value">${duration}</span></span>`);
-          if (cost)
-            parts.push(`<span class="stat-item"><span class="stat-icon">💲</span><span class="stat-value">${cost}</span></span>`);
           if (turns && turns > 1)
             parts.push(`<span class="stat-item"><span class="stat-icon">↻</span><span class="stat-value">${turns} turnos</span></span>`);
 
           if (parts.length > 0) {
+            const statsBar = document.createElement('div');
+            statsBar.className = 'response-stats';
             statsBar.innerHTML = parts.join('');
-            // Append ao .content (não ao .log-line) para ficar ABAIXO do texto
             const contentEl = lastAssistantBubble.querySelector('.content');
-            if (contentEl) {
-              contentEl.appendChild(statsBar);
-            } else {
-              lastAssistantBubble.appendChild(statsBar);
-            }
+            if (contentEl) contentEl.appendChild(statsBar);
+            else lastAssistantBubble.appendChild(statsBar);
           }
         }
 
@@ -1265,7 +1317,7 @@ function createInlineToolBlock(toolName, toolInput) {
     const filePath = toolInput.file_path || '';
     const content = toolInput.content || '';
     const lang = guessLang(filePath);
-    return buildCodeCard(ICONS.Write, `Criando ${filePath}`, content, lang);
+    return buildCodeCard(ICONS.Write, `Criando ${filePath}`, content, lang, filePath);
   }
 
   if (toolName === 'Edit') {
@@ -1276,31 +1328,63 @@ function createInlineToolBlock(toolName, toolInput) {
   }
 
   if (toolName === 'Bash') {
-    const cmd = toolInput.command || '';
-    return buildCodeCard(ICONS.Bash, 'Comando Bash', cmd, 'bash');
+    const cmd = (toolInput.command || '').trim();
+    return buildBashChip(cmd);
   }
 
   return null; // Read, Glob, Grep, etc. → apenas no sumário colapsável
 }
 
-function buildDiffCard(filePath, oldStr, newStr) {
-  const card = document.createElement('div');
-  card.className = 'inline-tool-card diff-card';
+function flushPendingChips() {
+  if (!_pendingChips.length) return;
+  _pendingChips.forEach(chip => responseArea.appendChild(chip));
+  _pendingChips = [];
+  lastAssistantBubble = null;
+  currentAssistantText = '';
+  responseArea.scrollTo({ top: responseArea.scrollHeight, behavior: 'smooth' });
+}
 
-  const header = document.createElement('div');
-  header.className = 'inline-tool-header';
-  header.innerHTML = `
-    <span class="inline-tool-icon">✏️</span>
-    <span class="inline-tool-title">${escapeHtml(filePath)}</span>
-    <div class="inline-tool-spinner"></div>
-  `;
-  card.appendChild(header);
+function buildBashChip(cmd) {
+  const snippet = cmd.length > 60 ? cmd.slice(0, 60) + '…' : cmd;
+
+  const details = document.createElement('details');
+  details.className = 'file-edit-chip';
+
+  const summary = document.createElement('summary');
+  summary.className = 'file-edit-chip-summary';
+  summary.innerHTML = `<span class="file-edit-action">Bash</span> <span class="file-edit-name bash-cmd">${escapeHtml(snippet)}</span>`;
+  details.appendChild(summary);
+
+  if (cmd) {
+    const pre = document.createElement('pre');
+    const code = document.createElement('code');
+    code.className = 'language-bash';
+    code.textContent = cmd;
+    if (window.hljs) { try { hljs.highlightElement(code); } catch (_) {} }
+    pre.appendChild(code);
+    details.appendChild(pre);
+  }
+
+  return details;
+}
+
+function buildDiffCard(filePath, oldStr, newStr) {
+  const oldLines = oldStr ? oldStr.split('\n') : [];
+  const newLines = newStr ? newStr.split('\n') : [];
+  const removed = oldLines.length;
+  const added = newLines.length;
+  const fileName = filePath.split(/[\\/]/).pop();
+
+  const details = document.createElement('details');
+  details.className = 'file-edit-chip';
+
+  const summary = document.createElement('summary');
+  summary.className = 'file-edit-chip-summary';
+  summary.innerHTML = `<span class="file-edit-action">Editado</span> <span class="file-edit-name">${escapeHtml(fileName)}</span><span class="file-edit-stats"><span class="stat-added">+${added}</span> <span class="stat-removed">-${removed}</span></span>`;
+  details.appendChild(summary);
 
   const pre = document.createElement('pre');
   pre.className = 'diff-pre';
-
-  const oldLines = oldStr.split('\n');
-  const newLines = newStr.split('\n');
 
   // Linhas removidas
   oldLines.forEach(line => {
@@ -1324,24 +1408,24 @@ function buildDiffCard(filePath, oldStr, newStr) {
     pre.appendChild(row);
   });
 
-  card.appendChild(pre);
-  return card;
+  details.appendChild(pre);
+  return details;
 }
 
-function buildCodeCard(icon, title, code, lang) {
-  const card = document.createElement('div');
-  card.className = 'inline-tool-card';
+function buildCodeCard(icon, title, code, lang, filePath) {
+  const lines = code ? code.split('\n').length : 0;
+  const fileName = (filePath || title).split(/[\\/]/).pop();
+  const isWrite = icon === '📝';
 
-  const header = document.createElement('div');
-  header.className = 'inline-tool-header';
-  header.innerHTML = `
-    <span class="inline-tool-icon">${icon}</span>
-    <span class="inline-tool-title">${escapeHtml(title)}</span>
-    <div class="inline-tool-spinner"></div>
-  `;
-  card.appendChild(header);
+  const details = document.createElement('details');
+  details.className = 'file-edit-chip';
 
-  if (code.trim()) {
+  const summary = document.createElement('summary');
+  summary.className = 'file-edit-chip-summary';
+  summary.innerHTML = `<span class="file-edit-action">Editado</span> <span class="file-edit-name">${escapeHtml(fileName)}</span><span class="file-edit-stats"><span class="stat-added">+${lines}</span></span>`;
+  details.appendChild(summary);
+
+  if (code && code.trim()) {
     const pre = document.createElement('pre');
     const codeEl = document.createElement('code');
     if (lang) codeEl.className = `language-${lang}`;
@@ -1350,10 +1434,10 @@ function buildCodeCard(icon, title, code, lang) {
       try { hljs.highlightElement(codeEl); } catch (_) { }
     }
     pre.appendChild(codeEl);
-    card.appendChild(pre);
+    details.appendChild(pre);
   }
 
-  return card;
+  return details;
 }
 
 // ── Tool use collapsible block ────────────────────────────────
@@ -1592,6 +1676,9 @@ async function sendMessage(directText) {
     console.log(`[SESSION] Criada nova sessão: ${currentSessionId}`);
   }
 
+  // Incrementa o turno do usuário (para posicionar chips ao recarregar sessão)
+  _sessionUserTurn++;
+
   // Auto-minimizar sidebar ao conversar
   if (sidebar && !sidebar.classList.contains('collapsed')) {
     sidebar.classList.add('collapsed');
@@ -1638,7 +1725,7 @@ async function sendMessage(directText) {
     if (tokEl && (window._liveTokens.in || window._liveTokens.out)) {
       tokEl.style.display = '';
       tokEl.textContent = `↑${window._liveTokens.in.toLocaleString()} ↓${window._liveTokens.out.toLocaleString()} tk`;
-      
+
       const model = getLivingModel();
       const costRaw = calculateCost(model, window._liveTokens.in, window._liveTokens.out);
       if (costEl && costRaw > 0) {
@@ -1707,8 +1794,9 @@ async function sendMessage(directText) {
       ...(currentProjectPath ? { 'OPENCLAUDE_CWD': currentProjectPath } : {}),
       ...(window._continueSession ? { 'OPENCLAUDE_CONTINUE': '1' } : {}),
     };
-    // Consome a flag de continue (só vale para a próxima mensagem)
-    window._continueSession = false;
+    // Após a primeira mensagem da sessão, ativa --continue automaticamente
+    // para que as mensagens seguintes mantenham o contexto da conversa.
+    window._continueSession = true;
 
     // Puxa as configurações do provedor salvas no Modal da interface
     const savedProvider = localStorage.getItem('openclaude_provider_full');
@@ -2029,6 +2117,9 @@ const startNewSession = async () => {
     lastAssistantBubble = null;
     currentThinkingBubble = null;
     currentSessionId = null;
+    window._continueSession = false;
+    _sessionUserTurn = 0;
+    _pendingChips = [];
 
     await loadSessionsList();
     console.log('[SYSTEM] Memória limpa e nova sessão iniciada');

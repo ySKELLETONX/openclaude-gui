@@ -1631,7 +1631,7 @@ body {
 .response-stats {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 0;
   font-family: monospace;
   font-size: 0.68rem;
   color: #555;
@@ -1643,7 +1643,13 @@ body {
 .response-stats .stat-item {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
+}
+
+.response-stats .stat-item + .stat-item::before {
+  content: '·';
+  color: #444;
+  margin: 0 7px;
 }
 
 .response-stats .stat-icon {
@@ -1743,6 +1749,88 @@ body {
   line-height: 1.55;
   background: transparent !important;
   color: #a8b5c8;
+}
+
+/* ── File edit chip (Editado/Criado filename +X -Y) ─────── */
+.file-edit-chip {
+  display: block;
+  margin: 4px 0 4px 44px;
+  font-size: 0.82rem;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.file-edit-chip-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  padding: 2px 6px 2px 0;
+  border-radius: 4px;
+  list-style: none;
+  user-select: none;
+  color: #888;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  white-space: nowrap;
+}
+
+.file-edit-chip-summary::-webkit-details-marker { display: none; }
+
+.file-edit-chip-summary::after {
+  content: '›';
+  font-size: 1rem;
+  color: #555;
+  transition: transform 0.15s;
+}
+
+.file-edit-chip[open] .file-edit-chip-summary::after {
+  transform: rotate(90deg);
+}
+
+.file-edit-chip-summary:hover { color: #bbb; }
+.file-edit-chip-summary:hover::after { color: #999; }
+
+.file-edit-action {
+  color: #888;
+  font-family: inherit;
+}
+
+.file-edit-name {
+  color: #ccc;
+  font-weight: 600;
+}
+
+.file-edit-stats {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 2px;
+}
+
+.stat-added  { color: #4caf72; font-weight: 700; }
+.stat-removed { color: #e05555; font-weight: 700; }
+
+.bash-cmd {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.78rem;
+  color: #aaa;
+}
+
+.file-edit-chip .diff-pre {
+  margin: 4px 0 0 0;
+  max-height: 320px;
+  overflow-y: auto;
+  border-radius: 6px;
+  background: #0d0d12;
+  border: 1px solid rgba(255,255,255,0.07);
+}
+
+.file-edit-chip pre {
+  margin: 4px 0 0 0;
+  max-height: 320px;
+  overflow-y: auto;
+  border-radius: 6px;
+  background: #0d0d12;
+  border: 1px solid rgba(255,255,255,0.07);
 }
 
 /* ── Diff view ───────────────────────────────────────────── */
